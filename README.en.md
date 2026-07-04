@@ -6,6 +6,8 @@ ASK DATABASE is an open-source, schema-aware workspace for database-specific SQL
 
 [Polska wersja](README.md)
 
+Public demo after GitHub Actions deployment: [https://milekv.github.io/ask-database/](https://milekv.github.io/ask-database/)
+
 ## Product Preview
 
 ![ASK DATABASE](public-assets/screenshots/ask-database.png)

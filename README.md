@@ -6,6 +6,8 @@ ASK DATABASE to profesjonalny, open-source'owy workspace do pracy z konkretną b
 
 [English version](README.en.md)
 
+Demo publiczne po przejściu GitHub Actions: [https://milekv.github.io/ask-database/](https://milekv.github.io/ask-database/)
+
 ![CI](https://github.com/milekv/ask-database/actions/workflows/ci.yml/badge.svg)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6)
 ![React](https://img.shields.io/badge/React-19-149eca)
