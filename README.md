@@ -2,159 +2,72 @@
 
 **Naucz system swojej bazy. Powiedz, jakich danych potrzebujesz. Otrzymaj SQL.**
 
-ASK DATABASE to profesjonalny, open-source'owy workspace do pracy z konkretną bazą danych: schematem, relacjami, historycznymi SELECT-ami, terminologią biznesową, korektami i regułami bezpieczeństwa. Celem projektu nie jest pokazanie “magicznego czatu”, tylko zbudowanie widocznej warstwy wiedzy, która pomaga generować i weryfikować zapytania SQL w sposób kontrolowany.
+ASK DATABASE to polski, open-source'owy workspace do pracy z własnym schematem bazy danych. Produkt łączy import DDL, pamięć historycznych SELECT-ów, słownik biznesowy, aliasy, ranking relacji, provider OpenAI po stronie backendu oraz walidację Safe Mode przed pokazaniem SQL.
 
 [English version](README.en.md)
 
-Demo publiczne po przejściu GitHub Actions: [https://milekv.github.io/ask-database/](https://milekv.github.io/ask-database/)
+Demo statyczne: [https://milekv.github.io/ask-database/](https://milekv.github.io/ask-database/)
 
 ![CI](https://github.com/milekv/ask-database/actions/workflows/ci.yml/badge.svg)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6)
 ![React](https://img.shields.io/badge/React-19-149eca)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-## Podgląd produktu
+## Co robi projekt
 
-![ASK DATABASE](public-assets/screenshots/ask-database.png)
+ASK DATABASE nie jest prostą mapą słów kluczowych na gotowy SQL. Produkcyjny endpoint `/api/ask` używa asynchronicznego pipeline'u:
 
-## Dlaczego istnieje ASK DATABASE
-
-Natural-language-to-SQL bez kontekstu bazy jest kruche. Ten sam termin biznesowy może oznaczać inną tabelę, inny join albo inny filtr w zależności od firmy i workspace. ASK DATABASE rozwiązuje ten problem przez jawne uczenie systemu:
-
-- jakie tabele i kolumny istnieją,
-- które relacje są poprawne,
-- jak zespół wcześniej pisał SELECT-y,
-- jakie terminy biznesowe oznaczają konkretne warunki SQL,
-- jakie korekty użytkownik zatwierdził wcześniej,
-- jakie reguły Safe Mode muszą być spełnione przed pokazaniem wyniku.
+1. ładuje zapisany workspace z PostgreSQL,
+2. pobiera pasujące tabele, kolumny, glossary i aliasy,
+3. wybiera historyczne SELECT-y jako evidence,
+4. rankinguje ścieżki relacji,
+5. prosi backendowy provider OpenAI o strukturalną interpretację pytania,
+6. generuje SQL jako Structured Output,
+7. waliduje tabele, aliasy, kolumny i Safe Mode,
+8. przy błędach może wykonać maksymalnie dwie kontrolowane regeneracje,
+9. zapisuje wersję zapytania i zwraca evidence oraz decision log.
 
 ## Co wyróżnia ASK DATABASE
 
-ASK DATABASE nie jest tylko ekranem “zadaj pytanie, dostaniesz SQL”.
+- **Workspace per baza**: użytkownik może utworzyć własny workspace, wybrać dialekt i wkleić DDL.
+- **PostgreSQL persistence**: workspace, schemat, relacje, glossary, aliasy, pamięć i historia rozmów są zapisywane w bazie.
+- **Query Memory**: historyczne SELECT-y są redagowane i analizowane strukturalnie.
+- **Business Glossary i aliasy**: język zespołu wpływa na retrieval schematu.
+- **Relationship Path Ranking**: joiny są wybierane przez deterministyczny ranking relacji.
+- **OpenAI Provider Boundary**: klucz API istnieje wyłącznie po stronie backendu.
+- **Structured Outputs + Zod**: odpowiedzi providera są walidowane typami.
+- **Safe Mode**: wynik musi być `SELECT` albo `WITH`; destrukcyjne polecenia są blokowane.
+- **Statyczne GitHub Pages bez udawania backendu**: publiczna strona pokazuje zapisany przykład demo i jasno mówi, że live generowanie wymaga lokalnego API.
 
-Najważniejsze różnice:
+## Trzy warstwy wiedzy
 
-- **Schema Memory**: każda przestrzeń robocza ma własny schemat i wersję wiedzy.
-- **Historical Query Memory**: system analizuje stare SELECT-y i wykrywa wzorce joinów, filtrów i agregacji.
-- **Correction Memory**: poprawki użytkownika stają się częścią pamięci workspace.
-- **Business Glossary**: język zespołu jest mapowany na tabele, kolumny i warunki SQL.
-- **Evidence**: wynik pokazuje, z czego został zbudowany.
-- **Safe Mode**: wersja 0.1.0 generuje tylko read-only SQL i waliduje rezultat.
-- **Brak sekretów w przeglądarce**: provider LLM może być obsługiwany tylko przez backend.
+### Schema Memory
 
-## Jak działa pipeline
+Schema Memory powstaje z DDL. ASK DATABASE zapisuje tabele, kolumny, primary keys, foreign keys i relacje w PostgreSQL. Retrieval nie wysyła automatycznie całego schematu do providera; najpierw wybiera kandydatów i evidence aplikacyjne.
 
-```mermaid
-flowchart TD
-  A["Pytanie użytkownika"] --> B["Retrieval workspace"]
-  B --> C["Dopasowanie schematu"]
-  C --> D["Pamięć historycznych SELECT-ów"]
-  D --> E["Path finder relacji"]
-  E --> F["Generowanie SQL"]
-  F --> G["Walidacja schematu"]
-  G --> H["Safe Mode"]
-  H --> I["SQL + evidence"]
-```
+### Query Memory
 
-## Funkcje v0.1.0
+Query Memory powstaje z historycznych SELECT-ów. Import usuwa literały, zapisuje znormalizowany SQL, tabele, kolumny, joiny, filtry, `GROUP BY`, `ORDER BY` i strukturę zapytania. Najtrafniejsze historyczne przykłady trafiają do promptu generowania jako sanitized SQL.
 
-- Monorepo TypeScript z `pnpm workspaces`.
-- Polski interfejs jako domyślny.
-- Widoczny przełącznik PL/EN.
-- Demo workspace “University Demo”.
-- Parser DDL dla reprezentatywnego `CREATE TABLE` i `ALTER TABLE ... FOREIGN KEY`.
-- Query Memory z redakcją literałów.
-- Wykrywanie tabel, joinów, filtrów, `GROUP BY` i `ORDER BY` w historycznych SELECT-ach.
-- Deterministyczne wzorce zapytań.
-- Business Glossary.
-- Relationship Rules.
-- Workspace Memory i Correction Memory.
-- Safe Mode blokujący zapytania inne niż `SELECT`/`WITH`.
-- Walidacja tabel i kwalifikowanych kolumn względem schematu.
-- Evidence i confidence dla wygenerowanego wyniku.
-- API Fastify z `/api/health`, `/api/workspaces/demo`, `/api/ask`.
-- Frontend React + Vite + Tailwind + Monaco Editor + React Flow.
-- Docker Compose z PostgreSQL do lokalnej persistencji.
+### Correction Memory
 
-## Przykład z University Demo
+Correction Memory to reguły zapisane po korektach użytkownika albo dodane ręcznie przez API. Aktywne reguły workspace mogą wpływać na retrieval i ranking ścieżek relacji. UI ma jeszcze ograniczony ekran zatwierdzania pamięci, więc zaawansowane zarządzanie pamięcią najlepiej testować przez API.
 
-Pytanie:
+## Tryby działania
 
-```text
-Pokaż aktywnych studentów z nazwą wydziału
-```
+### Lokalnie z backendem
 
-Interpretacja:
-
-```text
-Aktywni studenci wraz z nazwą wydziału, ograniczeni limitem wyników.
-```
-
-Wynik:
-
-```sql
-SELECT
-  s.id,
-  s.full_name,
-  s.email,
-  d.name AS department_name
-FROM students s
-JOIN departments d ON s.department_id = d.id
-WHERE s.status = 'active'
-ORDER BY s.created_at DESC
-LIMIT 50;
-```
-
-Evidence:
-
-- schemat zawiera tabele `students` i `departments`,
-- relacja `students.department_id -> departments.id` pochodzi z DDL,
-- glossary zna termin “aktywni studenci”,
-- Safe Mode potwierdza read-only SQL.
-
-## Architektura
-
-```text
-ask-database/
-  apps/
-    web/                  # React, Vite, Tailwind, Monaco, React Flow
-    api/                  # Fastify API i provider boundary
-  packages/
-    shared/               # typy, schematy Zod, wspólne utilsy SQL
-    schema-parser/        # parser DDL
-    sql-memory/           # import i analiza historycznych SELECT-ów
-    sql-validator/        # Safe Mode i walidacja schematu
-    core/                 # pipeline, demo workspace, health score, path finder
-    ui/                   # współdzielone komponenty React
-  examples/university-demo/
-  docs/
-  public-assets/
-```
-
-## Model prywatności
-
-- ASK DATABASE v0.1.0 nie wykonuje zapytań na produkcyjnej bazie.
-- Frontend nie przechowuje kluczy providerów.
-- Historyczne SQL-e są redagowane przez zastąpienie literałów.
-- Provider LLM jest abstrakcją backendową i domyślnie jest wyłączony.
-- Safe Mode dopuszcza tylko zapytania odczytujące dane.
-
-## Instalacja lokalna
-
-Wymagania:
-
-- Node.js 22+
-- pnpm 11+
-- opcjonalnie Docker, jeśli chcesz uruchomić PostgreSQL
+Pełny tryb produktu wymaga PostgreSQL, migracji API i skonfigurowanego providera.
 
 ```bash
 pnpm install
-pnpm build
-pnpm test
+docker compose up -d
+pnpm db:migrate
+pnpm dev:api
 pnpm dev
 ```
 
-Aplikacja webowa uruchamia się lokalnie na:
+Web:
 
 ```text
 http://127.0.0.1:5174/
@@ -162,80 +75,145 @@ http://127.0.0.1:5174/
 
 API:
 
-```bash
-pnpm dev:api
-```
-
-Domyślny adres API:
-
 ```text
 http://127.0.0.1:4310/api/health
 ```
 
-## Docker
+### GitHub Pages
 
-```bash
-docker compose up -d
+GitHub Pages nie hostuje Fastify ani PostgreSQL. Dlatego publiczna strona działa jako statyczne demo:
+
+- pokazuje University Demo,
+- pokazuje schemat, relacje, historyczne SELECT-y i glossary,
+- może pokazać jawnie oznaczony zapisany przykład,
+- nie udaje live generowania dla dowolnego pytania.
+
+## Konfiguracja OpenAI
+
+Klucz providera ustawiaj tylko w backendzie:
+
+```env
+LLM_PROVIDER=openai
+OPENAI_API_KEY=<backend-openai-api-key>
+OPENAI_MODEL=gpt-4.1-mini
+OPENAI_TIMEOUT_MS=45000
 ```
 
-`docker-compose.yml` uruchamia lokalnego PostgreSQL-a dla dalszego rozwoju persistencji.
+Frontend nie czyta i nie wysyła `OPENAI_API_KEY`.
 
 ## Zmienne środowiskowe
 
-Skopiuj `.env.example` do `.env` w lokalnym środowisku. Plik `.env` jest ignorowany przez Git.
+Skopiuj `.env.example` do `.env`.
 
-Najważniejsze zmienne:
+Najważniejsze wartości:
 
 - `DATABASE_URL`
 - `API_HOST`
 - `API_PORT`
 - `LLM_PROVIDER`
-- `LLM_API_KEY`
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL`
+- `OPENAI_TIMEOUT_MS`
 
-## Komendy deweloperskie
+## API
+
+Workspace:
+
+- `GET /api/workspaces`
+- `POST /api/workspaces`
+- `GET /api/workspaces/:workspaceId`
+- `PATCH /api/workspaces/:workspaceId`
+- `DELETE /api/workspaces/:workspaceId`
+
+Ask Database:
+
+- `POST /api/workspaces/:workspaceId/ask`
+- `POST /api/ask`
+- `POST /api/workspaces/:workspaceId/conversations/:conversationId/corrections`
+
+Wiedza workspace:
+
+- `POST /api/workspaces/:workspaceId/glossary`
+- `PATCH /api/workspaces/:workspaceId/glossary/:termId`
+- `DELETE /api/workspaces/:workspaceId/glossary/:termId`
+- `POST /api/workspaces/:workspaceId/aliases`
+- `PATCH /api/workspaces/:workspaceId/aliases/:aliasId`
+- `DELETE /api/workspaces/:workspaceId/aliases/:aliasId`
+- `POST /api/workspaces/:workspaceId/memory`
+- `PATCH /api/workspaces/:workspaceId/memory/:memoryId`
+- `DELETE /api/workspaces/:workspaceId/memory/:memoryId`
+
+## Architektura
+
+```mermaid
+flowchart TD
+  Web["React / Vite UI"] --> Api["Fastify API"]
+  Api --> Repo["WorkspaceRepository"]
+  Repo --> Pg["PostgreSQL"]
+  Api --> Core["Core Ask Pipeline"]
+  Core --> Retriever["Schema + History Retrieval"]
+  Core --> Paths["Relationship Path Ranking"]
+  Core --> Validator["SQL Validator / Safe Mode"]
+  Core --> Provider["LLMProvider"]
+  Provider --> OpenAI["OpenAI Responses API"]
+```
+
+```text
+apps/web                 React, Vite, Tailwind, Monaco, React Flow
+apps/api                 Fastify, Drizzle, migrations, provider factory
+packages/shared          typy, Zod schemas, SQL helpers
+packages/schema-parser   parser DDL
+packages/sql-memory      import i analiza historycznych SELECT-ów
+packages/sql-validator   Safe Mode i walidacja schematu
+packages/core            retrieval, prompts, ask pipeline, demo data
+packages/ui              współdzielone komponenty React
+```
+
+## Przykład University Demo
+
+Pytanie:
+
+```text
+Pokaż studentów przyjętych od 2022 roku, którzy są obecnie aktywni i uzyskali co najmniej jedną ocenę 5. Posortuj ich według nazwiska.
+```
+
+Pipeline pobiera między innymi:
+
+- glossary: `aktywni studenci`, `wysokie oceny`,
+- kandydatów schematu: `students`, `enrollments`, `grades`,
+- relacje: `students -> enrollments -> grades`,
+- historyczne SELECT-y z podobnymi tabelami i filtrami.
+
+Przykład korekty:
+
+```text
+Oceny pobieraj przez zapisy na kurs, nie bezpośrednio ze studenta.
+```
+
+Backendowy endpoint korekty interpretuje poprawkę, regeneruje SQL przez ten sam pipeline i może zaproponować zapis do Workspace Memory. Trwałe zapisywanie pamięci działa przez API; pełny interfejs zatwierdzania tej pamięci w UI jest nadal ograniczony.
+
+## Komendy
 
 ```bash
-pnpm dev          # frontend
-pnpm dev:api      # API
-pnpm build        # build całego monorepo
-pnpm test         # build + testy pakietów
-pnpm typecheck    # strict TypeScript
-pnpm lint:repo    # skan publicznej higieny repo
+pnpm install
+pnpm db:migrate
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm audit
 ```
 
 ## Testy
 
-Testy obejmują:
+Testy obejmują parser DDL, import historycznych SELECT-ów, redakcję literałów, walidację Safe Mode, retrieval, ranking relacji i orkiestrację pipeline'u z `MockLLMProvider`.
 
-- parser DDL,
-- import historycznych SELECT-ów,
-- redakcję literałów,
-- ekstrakcję tabel, joinów, filtrów i sortowania,
-- Safe Mode,
-- walidację tabel i kolumn,
-- workspace health,
-- path finder relacji,
-- deterministyczny pipeline generowania SQL.
+## Aktualne ograniczenia
 
-## Roadmap
-
-- Trwała persistencja workspace w PostgreSQL.
-- Pełny kreator importu schematu z zapisem postępu.
-- Adaptery providerów LLM za backendem.
-- Rozbudowany retrieval semantyczny.
-- Porównanie dialektów SQL.
-- Eksport raportów i wersjonowanie historii zapytań.
-- GitHub Pages tylko dla uczciwego statycznego demo bez udawania live providera.
-
-## Contributing
-
-Projekt jest pisany z myślą o publicznym open-source. Pull requesty powinny mieć:
-
-- przejrzysty zakres,
-- testy dla logiki core/parser/memory/validator,
-- brak danych prywatnych,
-- brak kluczy i lokalnych ścieżek,
-- UI copy przez i18n.
+- Live generowanie wymaga backendu, PostgreSQL i `OPENAI_API_KEY`.
+- GitHub Pages jest statyczne i nie generuje dowolnego SQL.
+- UI ma podstawowe tworzenie workspace; pełny kreator krok po kroku, wersjonowanie rozmów w UI, SQL diff i manual override są jeszcze do rozbudowy.
+- Test Commerce acceptance flow nie jest kompletny bez skonfigurowanego providera OpenAI i brakujących elementów manual override w UI.
 
 ## Licencja
 

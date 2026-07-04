@@ -1,23 +1,32 @@
 {
   "name": "@ask-database/api",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "private": true,
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "db:migrate": "tsx src/db/migrate.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@ask-database/core": "workspace:*",
+    "@ask-database/schema-parser": "workspace:*",
     "@ask-database/shared": "workspace:*",
+    "@ask-database/sql-memory": "workspace:*",
+    "@ask-database/sql-validator": "workspace:*",
     "@fastify/cors": "^10.0.2",
+    "drizzle-orm": "^0.45.2",
     "fastify": "^5.2.1",
+    "openai": "^6.45.0",
+    "pg": "^8.22.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/pg": "^8.20.0",
+    "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.2",
     "typescript": "^5.8.3"
   }

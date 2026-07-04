@@ -1,209 +1,256 @@
 import type {
+  AskRequest,
+  DecisionLogEntry,
   GenerationEvidence,
   GenerationResult,
-  RelationshipDefinition,
+  QueryTurn,
+  QueryVersion,
+  ValidationResult,
   Workspace
 } from "@ask-database/shared";
 import { validateGeneratedSql } from "@ask-database/sql-validator";
-import { findRelationshipPath } from "./path-finder.js";
+import type { LLMProvider } from "./llm-provider.js";
+import { buildControlledRegenerationPrompt } from "./prompts/controlled-regeneration.prompt.js";
+import { buildQuestionInterpretationPrompt } from "./prompts/question-interpretation.prompt.js";
+import {
+  generatedSqlDraftSchema,
+  questionInterpretationSchema,
+  type GeneratedSqlDraft,
+  type QuestionInterpretation
+} from "./prompts/schemas.js";
+import { buildSqlGenerationPrompt } from "./prompts/sql-generation.prompt.js";
+import { retrieveHistoricalQueries } from "./retrieval/historical-query-retriever.js";
+import { rankRelationshipPaths } from "./retrieval/relationship-path-ranker.js";
+import { retrieveWorkspaceContext } from "./retrieval/workspace-retriever.js";
 
-export interface GenerateSqlInput {
+const MAX_CONTROLLED_REGENERATION_ATTEMPTS = 2;
+
+export interface AskDatabaseInput {
   workspace: Workspace;
-  question: string;
-  safeMode: boolean;
+  request: AskRequest;
+  provider: LLMProvider;
+  conversationTurns?: QueryTurn[];
+  createQueryVersion?: (result: {
+    question: string;
+    interpretation: string;
+    sql: string;
+    validation: ValidationResult;
+    metadata: Record<string, unknown>;
+  }) => Promise<QueryVersion>;
 }
 
-export function generateReadOnlySql(input: GenerateSqlInput): GenerationResult {
-  const question = input.question.trim();
-  const normalized = normalizeText(question);
-  const matchedTerms = input.workspace.glossary.filter((term) =>
-    [term.name, ...term.aliases].some((value) => normalized.includes(normalizeText(value)))
+export async function askDatabase(input: AskDatabaseInput): Promise<GenerationResult> {
+  const decisionLog: DecisionLogEntry[] = [];
+  const question = input.request.question.trim();
+  addDecision(decisionLog, "validate_workspace", `Workspace ${input.workspace.id} loaded.`);
+
+  const retrieval = retrieveWorkspaceContext(input.workspace, question);
+  addDecision(
+    decisionLog,
+    "schema_retrieval",
+    `Retrieved ${retrieval.candidateTables.length} candidate tables and ${retrieval.candidateColumns.length} candidate columns.`,
+    { retrievalScore: retrieval.retrievalScore }
   );
 
-  const scenario = chooseScenario(normalized);
-  const draft = buildScenarioSql(scenario);
-  const relationshipPath = buildRelationshipPath(input.workspace, scenario);
-  const validation = validateGeneratedSql(draft.sql, input.workspace.schema, {
-    safeMode: input.safeMode
+  const historical = retrieveHistoricalQueries(input.workspace, question);
+  addDecision(decisionLog, "historical_retrieval", `Retrieved ${historical.length} historical SQL examples.`);
+
+  const relationshipPaths = rankRelationshipPaths(input.workspace, retrieval);
+  const selectedPath = relationshipPaths[0] ?? null;
+  addDecision(decisionLog, "relationship_paths", `Ranked ${relationshipPaths.length} relationship paths.`);
+
+  const activeMemory = input.workspace.memoryRules.filter((rule) => rule.enabled !== false);
+  const interpretationPrompt = buildQuestionInterpretationPrompt({
+    question,
+    dialect: input.request.dialect,
+    retrieval,
+    historical,
+    paths: relationshipPaths,
+    memory: activeMemory
   });
+  const interpretation = await input.provider.generateStructured<QuestionInterpretation>({
+    name: "question_interpretation",
+    schema: questionInterpretationSchema,
+    ...interpretationPrompt
+  });
+  addDecision(decisionLog, "question_interpretation", interpretation.requestSummary, {
+    requiresClarification: interpretation.requiresClarification
+  });
+
+  const generationPrompt = buildSqlGenerationPrompt({
+    dialect: input.request.dialect,
+    interpretation,
+    retrieval,
+    selectedPath,
+    historical,
+    memory: activeMemory
+  });
+  let draft = await input.provider.generateStructured<GeneratedSqlDraft>({
+    name: "sql_generation",
+    schema: generatedSqlDraftSchema,
+    ...generationPrompt
+  });
+  addDecision(decisionLog, "sql_generation", draft.explanation);
+
+  let validation = validateGeneratedSql(draft.sql, input.workspace.schema, {
+    safeMode: input.request.safeMode
+  });
+  let attempts = 0;
+
+  while (!validation.valid && attempts < MAX_CONTROLLED_REGENERATION_ATTEMPTS) {
+    attempts += 1;
+    const regenerationPrompt = buildControlledRegenerationPrompt({
+      previousDraft: draft,
+      validationIssues: validation.issues,
+      allowedContext: {
+        retrieval,
+        selectedPath,
+        dialect: input.request.dialect
+      }
+    });
+    draft = await input.provider.generateStructured<GeneratedSqlDraft>({
+      name: "controlled_regeneration",
+      schema: generatedSqlDraftSchema,
+      ...regenerationPrompt
+    });
+    validation = validateGeneratedSql(draft.sql, input.workspace.schema, {
+      safeMode: input.request.safeMode
+    });
+    addDecision(decisionLog, "controlled_regeneration", `Attempt ${attempts} completed.`, {
+      valid: validation.valid
+    });
+  }
+
+  if (!validation.valid) {
+    addDecision(decisionLog, "validation_rejected", "Generated SQL failed deterministic validation.", {
+      issues: validation.issues
+    });
+  } else {
+    addDecision(decisionLog, "validation_passed", "Generated SQL passed deterministic schema and Safe Mode validation.");
+  }
+
+  const queryVersion = input.createQueryVersion
+    ? await input.createQueryVersion({
+        question,
+        interpretation: interpretation.requestSummary,
+        sql: draft.sql,
+        validation,
+        metadata: {
+          retrieval,
+          historical,
+          relationshipPaths,
+          decisionLog
+        }
+      })
+    : undefined;
 
   return {
     question,
-    interpretation: draft.interpretation,
+    interpretation: interpretation.requestSummary,
     sql: draft.sql,
-    dialect: input.workspace.dialect,
-    relationshipPath,
-    evidence: buildEvidence(input.workspace, matchedTerms.length, relationshipPath),
+    dialect: input.request.dialect,
+    relationshipPath: selectedPath?.relationships ?? [],
+    alternativePaths: relationshipPaths.slice(1),
+    schemaSelection: retrieval,
+    historicalEvidence: historical,
+    businessTermEvidence: retrieval.matchedBusinessTerms,
+    workspaceMemoryEvidence: activeMemory,
+    evidence: buildEvidence({
+      retrievalScore: retrieval.retrievalScore,
+      historicalCount: historical.length,
+      glossaryCount: retrieval.matchedBusinessTerms.length,
+      aliasCount: retrieval.matchedAliases.length,
+      relationshipPathCount: relationshipPaths.length,
+      validation
+    }),
+    confidence: calculateApplicationConfidence({
+      retrievalScore: retrieval.retrievalScore,
+      historicalCount: historical.length,
+      validation
+    }),
     validation,
+    ambiguities: [...interpretation.ambiguities, ...draft.ambiguities],
+    assumptions: draft.assumptions,
+    ...(queryVersion ? { queryVersion } : {}),
+    decisionLog,
     generatedAt: new Date().toISOString(),
-    engine: "deterministic-demo"
+    engine: input.provider.name === "openai" ? "provider:openai" : input.provider.name === "mock" ? "mock:test" : "provider:disabled"
   };
 }
 
-type Scenario = "active-students" | "course-popularity" | "high-grades" | "default-students";
-
-function chooseScenario(normalizedQuestion: string): Scenario {
-  if (containsAny(normalizedQuestion, ["popularnosc", "najpopularniejsze", "zapisy", "enrollment"])) {
-    return "course-popularity";
-  }
-
-  if (containsAny(normalizedQuestion, ["oceny", "grades", "grade", "najlepsze"])) {
-    return "high-grades";
-  }
-
-  if (containsAny(normalizedQuestion, ["aktywni", "aktywnych", "active", "wydzial", "wydzialu", "department"])) {
-    return "active-students";
-  }
-
-  return "default-students";
-}
-
-function buildScenarioSql(scenario: Scenario): { interpretation: string; sql: string } {
-  if (scenario === "course-popularity") {
-    return {
-      interpretation: "Lista kursow posortowana wedlug liczby zapisow studentow.",
-      sql: `SELECT
-  c.code,
-  c.title,
-  COUNT(e.id) AS enrollment_count
-FROM courses c
-LEFT JOIN enrollments e ON e.course_id = c.id
-GROUP BY c.code, c.title
-ORDER BY enrollment_count DESC
-LIMIT 20;`
-    };
-  }
-
-  if (scenario === "high-grades") {
-    return {
-      interpretation: "Studenci, kursy i wysokie oceny z zachowaniem sciezki relacji przez zapisy.",
-      sql: `SELECT
-  s.full_name,
-  c.title,
-  g.grade,
-  g.graded_at
-FROM students s
-JOIN enrollments e ON e.student_id = s.id
-JOIN courses c ON e.course_id = c.id
-JOIN grades g ON g.enrollment_id = e.id
-WHERE g.grade >= 4.5
-ORDER BY g.grade DESC
-LIMIT 50;`
-    };
-  }
-
-  if (scenario === "active-students") {
-    return {
-      interpretation: "Aktywni studenci wraz z nazwa wydzialu, ograniczeni limitem wynikow.",
-      sql: `SELECT
-  s.id,
-  s.full_name,
-  s.email,
-  d.name AS department_name
-FROM students s
-JOIN departments d ON s.department_id = d.id
-WHERE s.status = 'active'
-ORDER BY s.created_at DESC
-LIMIT 50;`
-    };
-  }
-
-  return {
-    interpretation: "Podstawowa lista studentow z bezpiecznym limitem wynikow.",
-    sql: `SELECT
-  s.id,
-  s.full_name,
-  s.email,
-  s.status
-FROM students s
-ORDER BY s.created_at DESC
-LIMIT 50;`
-  };
-}
-
-function buildRelationshipPath(workspace: Workspace, scenario: Scenario): RelationshipDefinition[] {
-  if (scenario === "course-popularity") {
-    return findRelationshipPath(workspace, "courses", "enrollments");
-  }
-
-  if (scenario === "high-grades") {
-    return [
-      ...findRelationshipPath(workspace, "students", "courses"),
-      ...findRelationshipPath(workspace, "courses", "grades")
-    ].filter((relationship, index, all) => all.findIndex((item) => item.id === relationship.id) === index);
-  }
-
-  if (scenario === "active-students") {
-    return findRelationshipPath(workspace, "students", "departments");
-  }
-
-  return [];
-}
-
-function buildEvidence(
-  workspace: Workspace,
-  matchedTermsCount: number,
-  relationshipPath: RelationshipDefinition[]
-): GenerationEvidence[] {
-  const evidence: GenerationEvidence[] = [
+function buildEvidence(input: {
+  retrievalScore: number;
+  historicalCount: number;
+  glossaryCount: number;
+  aliasCount: number;
+  relationshipPathCount: number;
+  validation: ValidationResult;
+}): GenerationEvidence[] {
+  return [
     {
-      label: "Schemat",
-      description: `Uzyto ${workspace.schema.tables.length} tabel z aktywnej wersji schematu.`,
-      confidence: 0.9,
+      label: "Schema retrieval",
+      description: `Application retrieval score: ${input.retrievalScore}.`,
+      confidence: Math.min(1, input.retrievalScore / 100),
       source: "schema"
     },
     {
-      label: "Pamiec zapytan",
-      description: `Workspace zawiera ${workspace.historicalQueries.length} historyczne SELECT-y.`,
-      confidence: Math.min(0.9, 0.4 + workspace.historicalQueries.length * 0.12),
+      label: "Historical SQL",
+      description: `${input.historicalCount} retrieved historical examples influenced context.`,
+      confidence: Math.min(1, input.historicalCount / 4),
       source: "history"
+    },
+    {
+      label: "Business glossary",
+      description: `${input.glossaryCount} enabled glossary terms matched the question.`,
+      confidence: input.glossaryCount > 0 ? 0.85 : 0,
+      source: "glossary"
+    },
+    {
+      label: "Schema aliases",
+      description: `${input.aliasCount} aliases matched the question.`,
+      confidence: input.aliasCount > 0 ? 0.8 : 0,
+      source: "alias"
+    },
+    {
+      label: "Relationship paths",
+      description: `${input.relationshipPathCount} candidate relationship paths were ranked.`,
+      confidence: input.relationshipPathCount > 0 ? 0.85 : 0.2,
+      source: "relationship"
+    },
+    {
+      label: "SQL validation",
+      description: input.validation.valid
+        ? "SQL passed deterministic schema and Safe Mode validation."
+        : "SQL was rejected by deterministic validation.",
+      confidence: input.validation.valid ? 1 : 0,
+      source: "validation"
     }
   ];
+}
 
-  if (matchedTermsCount > 0) {
-    evidence.push({
-      label: "Slownik biznesowy",
-      description: `Dopasowano ${matchedTermsCount} termin/terminy biznesowe do pytania.`,
-      confidence: 0.82,
-      source: "glossary"
-    });
+function calculateApplicationConfidence(input: {
+  retrievalScore: number;
+  historicalCount: number;
+  validation: ValidationResult;
+}): number {
+  if (!input.validation.valid) {
+    return 0;
   }
 
-  if (relationshipPath.length > 0) {
-    evidence.push({
-      label: "Sciezka relacji",
-      description: `Zweryfikowano ${relationshipPath.length} relacje miedzy tabelami.`,
-      confidence: 0.92,
-      source: "memory"
-    });
-  }
+  return Math.min(0.95, 0.45 + Math.min(0.3, input.retrievalScore / 300) + Math.min(0.2, input.historicalCount * 0.05));
+}
 
-  evidence.push({
-    label: "Walidacja",
-    description: "SQL zostal sprawdzony w Safe Mode przed pokazaniem wyniku.",
-    confidence: 1,
-    source: "validation"
+function addDecision(
+  log: DecisionLogEntry[],
+  stage: string,
+  message: string,
+  metadata?: Record<string, unknown>
+): void {
+  log.push({
+    id: `decision_${log.length + 1}`,
+    stage,
+    message,
+    ...(metadata ? { metadata } : {}),
+    createdAt: new Date().toISOString()
   });
-
-  return evidence;
-}
-
-function containsAny(input: string, phrases: string[]): boolean {
-  return phrases.some((phrase) => input.includes(normalizeText(phrase)));
-}
-
-function normalizeText(input: string): string {
-  return input
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/ł/g, "l")
-    .replace(/ą/g, "a")
-    .replace(/ć/g, "c")
-    .replace(/ę/g, "e")
-    .replace(/ń/g, "n")
-    .replace(/ó/g, "o")
-    .replace(/ś/g, "s")
-    .replace(/ź/g, "z")
-    .replace(/ż/g, "z");
 }

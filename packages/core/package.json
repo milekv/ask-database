@@ -1,6 +1,6 @@
 {
   "name": "@ask-database/core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "license": "MIT",
   "main": "./dist/index.js",
@@ -20,7 +20,8 @@
     "@ask-database/schema-parser": "workspace:*",
     "@ask-database/shared": "workspace:*",
     "@ask-database/sql-memory": "workspace:*",
-    "@ask-database/sql-validator": "workspace:*"
+    "@ask-database/sql-validator": "workspace:*",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "typescript": "^5.8.3",

@@ -1,6 +1,6 @@
 {
   "name": "ask-database",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Polski, schema-aware workspace do uczenia systemu struktury bazy i generowania bezpiecznego SQL.",
   "private": false,
   "type": "module",
@@ -9,9 +9,11 @@
   "scripts": {
     "dev": "pnpm --filter \"./packages/**\" build && pnpm --filter @ask-database/web dev",
     "dev:api": "pnpm --filter \"./packages/**\" build && pnpm --filter @ask-database/api dev",
+    "db:migrate": "pnpm --filter @ask-database/api db:migrate",
     "build": "pnpm -r --sort build",
     "test": "pnpm -r --sort build && pnpm -r --if-present test",
     "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "pnpm lint:repo",
     "lint:repo": "node scripts/check-public-hygiene.mjs"
   },
   "keywords": [

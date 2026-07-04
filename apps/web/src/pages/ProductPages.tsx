@@ -1,9 +1,12 @@
 import Editor from "@monaco-editor/react";
 import type {
+  CreateWorkspaceRequest,
   GenerationResult,
+  SqlDialect,
   TableDefinition,
   Workspace,
-  WorkspaceHealth
+  WorkspaceHealth,
+  WorkspaceImportSummary
 } from "@ask-database/shared";
 import { Badge, Button, Card, Metric, cn } from "@ask-database/ui";
 import { motion } from "framer-motion";
@@ -18,6 +21,12 @@ interface CommonPageProps {
   t: Translator;
   workspace: Workspace;
   health: WorkspaceHealth;
+  runtimeLabel: "api" | "static";
+  workspaces: Workspace[];
+  workspaceImportSummary: WorkspaceImportSummary | null;
+  isCreatingWorkspace: boolean;
+  onCreateWorkspace: (input: CreateWorkspaceRequest) => Promise<void>;
+  onWorkspaceSelect: (workspaceId: string) => void;
 }
 
 interface DashboardPageProps extends CommonPageProps {
@@ -25,7 +34,7 @@ interface DashboardPageProps extends CommonPageProps {
   onAskNow: () => void;
 }
 
-export function DashboardPage({ t, workspace, health, onTryDemo, onAskNow }: DashboardPageProps) {
+export function DashboardPage({ t, workspace, health, runtimeLabel, onTryDemo, onAskNow }: DashboardPageProps) {
   const pipeline = [
     "dashboard.pipeline1",
     "dashboard.pipeline2",
@@ -45,9 +54,14 @@ export function DashboardPage({ t, workspace, health, onTryDemo, onAskNow }: Das
       >
         <div className="grid gap-8 p-8 lg:grid-cols-[1.25fr_0.75fr] lg:p-12">
           <div>
-            <Badge className="bg-sky-400/15 text-sky-100" tone="info">
-              {t("dashboard.badge")}
-            </Badge>
+            <div className="flex flex-wrap gap-2">
+              <Badge className="bg-sky-400/15 text-sky-100" tone="info">
+                {t("dashboard.badge")}
+              </Badge>
+              <Badge className="bg-emerald-400/15 text-emerald-100" tone="good">
+                {t("common.runtime")}: {t(runtimeLabel === "api" ? "runtime.api" : "runtime.static")}
+              </Badge>
+            </div>
             <h1 className="mt-5 max-w-4xl text-4xl font-black tracking-tight sm:text-6xl">
               {t("dashboard.title")}
             </h1>
@@ -68,8 +82,8 @@ export function DashboardPage({ t, workspace, health, onTryDemo, onAskNow }: Das
             <div className="mt-5 space-y-3">
               {[
                 ["Schema", health.schemaCoverage],
-                ["Relations", health.relationshipCoverage],
-                ["Memory", health.memoryCoverage],
+                ["Relacje", health.relationshipCoverage],
+                ["Pamięć", health.memoryCoverage],
                 ["Glossary", health.glossaryCoverage]
               ].map(([label, value]) => (
                 <div key={label}>
@@ -130,7 +144,23 @@ export function DashboardPage({ t, workspace, health, onTryDemo, onAskNow }: Das
   );
 }
 
-export function WorkspacesPage({ t, workspace, health }: CommonPageProps) {
+export function WorkspacesPage({
+  t,
+  workspace,
+  workspaces,
+  health,
+  runtimeLabel,
+  workspaceImportSummary,
+  isCreatingWorkspace,
+  onCreateWorkspace,
+  onWorkspaceSelect
+}: CommonPageProps) {
+  const [name, setName] = useState("Test Commerce");
+  const [description, setDescription] = useState("");
+  const [dialect, setDialect] = useState<SqlDialect>("postgresql");
+  const [ddl, setDdl] = useState("");
+  const [historicalSql, setHistoricalSql] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
   const steps = [
     ["workspaces.importDdl", workspace.schema.tables.length],
     ["workspaces.reviewSchema", workspace.schema.relationships.length],
@@ -140,6 +170,134 @@ export function WorkspacesPage({ t, workspace, health }: CommonPageProps) {
 
   return (
     <PageFrame description={t("workspaces.description")} title={t("workspaces.title")}>
+      <Card>
+        <div className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
+          <div>
+            <h3 className="text-lg font-bold text-slate-950">{t("workspaces.active")}</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-600">{t("workspaces.activeDescription")}</p>
+            <div className="mt-4 space-y-2">
+              {workspaces.map((item) => (
+                <button
+                  className={cn(
+                    "w-full rounded-lg border p-3 text-left text-sm transition",
+                    item.id === workspace.id
+                      ? "border-sky-300 bg-sky-50 text-sky-900"
+                      : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                  )}
+                  key={item.id}
+                  onClick={() => onWorkspaceSelect(item.id)}
+                  type="button"
+                >
+                  <span className="block font-bold">{item.name}</span>
+                  <span className="mt-1 block text-xs">{item.schema.tables.length} tabel · {item.dialect}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setCreateError(null);
+              onCreateWorkspace({
+                name,
+                description,
+                dialect,
+                ddl,
+                historicalSql
+              }).catch((error: unknown) => {
+                setCreateError(error instanceof Error ? error.message : t("workspaces.createFailed"));
+              });
+            }}
+          >
+            <div>
+              <h3 className="text-lg font-bold text-slate-950">{t("workspaces.new")}</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">{t("workspaces.newDescription")}</p>
+            </div>
+            {runtimeLabel === "static" ? (
+              <p className="rounded-lg bg-amber-50 p-3 text-sm font-semibold text-amber-900">
+                {t("workspaces.staticCreateUnavailable")}
+              </p>
+            ) : null}
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="space-y-1 text-sm font-semibold text-slate-700">
+                {t("workspaces.name")}
+                <input
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                  onChange={(event) => setName(event.target.value)}
+                  value={name}
+                />
+              </label>
+              <label className="space-y-1 text-sm font-semibold text-slate-700">
+                {t("workspaces.dialect")}
+                <select
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                  onChange={(event) => setDialect(event.target.value as SqlDialect)}
+                  value={dialect}
+                >
+                  <option value="postgresql">PostgreSQL</option>
+                  <option value="mysql">MySQL</option>
+                  <option value="sqlite">SQLite</option>
+                  <option value="sqlserver">SQL Server</option>
+                  <option value="oracle">Oracle</option>
+                </select>
+              </label>
+            </div>
+            <label className="space-y-1 text-sm font-semibold text-slate-700">
+              {t("workspaces.optionalDescription")}
+              <input
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                onChange={(event) => setDescription(event.target.value)}
+                value={description}
+              />
+            </label>
+            <SqlInput
+              label={t("workspaces.ddl")}
+              onChange={setDdl}
+              placeholder="CREATE TABLE customers (...);"
+              value={ddl}
+            />
+            <SqlInput
+              label={t("workspaces.historicalSql")}
+              onChange={setHistoricalSql}
+              placeholder="SELECT ..."
+              value={historicalSql}
+            />
+            {createError ? <p className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{createError}</p> : null}
+            <Button disabled={runtimeLabel === "static" || isCreatingWorkspace || ddl.trim().length < 10 || name.trim().length < 2}>
+              {isCreatingWorkspace ? t("workspaces.creating") : t("workspaces.create")}
+            </Button>
+          </form>
+        </div>
+      </Card>
+
+      {workspaceImportSummary ? (
+        <Card>
+          <h3 className="text-lg font-bold text-slate-950">{t("workspaces.importSummary")}</h3>
+          <div className="mt-4 grid gap-3 md:grid-cols-4">
+            <Metric label={t("dashboard.tables")} value={workspaceImportSummary.tables} />
+            <Metric label={t("schema.columns")} value={workspaceImportSummary.columns} />
+            <Metric label={t("dashboard.relationships")} value={workspaceImportSummary.relationships} />
+            <Metric label={t("dashboard.history")} value={workspaceImportSummary.historicalQueries} />
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            <Metric label={t("workspaces.joinPatterns")} value={workspaceImportSummary.joinPatterns} />
+            <Metric label={t("workspaces.filterPatterns")} value={workspaceImportSummary.filterPatterns} />
+            <Metric label={t("workspaces.aggregationPatterns")} value={workspaceImportSummary.aggregationPatterns} />
+          </div>
+          {workspaceImportSummary.warnings.length > 0 ? (
+            <div className="mt-4 space-y-2">
+              {workspaceImportSummary.warnings.map((warning) => (
+                <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900" key={warning}>
+                  {warning}
+                </p>
+              ))}
+            </div>
+          ) : null}
+        </Card>
+      ) : null}
+
       <div className="grid gap-4 md:grid-cols-4">
         {steps.map(([key, value], index) => (
           <Card key={key}>
@@ -158,7 +316,12 @@ export function WorkspacesPage({ t, workspace, health }: CommonPageProps) {
         <div className="mt-5 flex flex-wrap gap-2">
           <Badge tone="good">{workspace.dialect}</Badge>
           <Badge tone="info">{workspace.schema.version}</Badge>
-          <Badge tone="neutral">{t("common.score")}: {health.score}</Badge>
+          <Badge tone="neutral">
+            {t("common.score")}: {health.score}
+          </Badge>
+          <Badge tone={runtimeLabel === "api" ? "good" : "warning"}>
+            {t("common.runtime")}: {t(runtimeLabel === "api" ? "runtime.api" : "runtime.static")}
+          </Badge>
         </div>
       </Card>
     </PageFrame>
@@ -167,7 +330,9 @@ export function WorkspacesPage({ t, workspace, health }: CommonPageProps) {
 
 interface AskPageProps extends CommonPageProps {
   copied: boolean;
+  errorMessage: string | null;
   history: GenerationResult[];
+  isGenerating: boolean;
   question: string;
   result: GenerationResult | null;
   onCopy: () => void;
@@ -179,7 +344,9 @@ interface AskPageProps extends CommonPageProps {
 export function AskPage({
   t,
   copied,
+  errorMessage,
   history,
+  isGenerating,
   question,
   result,
   onCopy,
@@ -204,9 +371,11 @@ export function AskPage({
             value={question}
           />
           <div className="flex flex-col gap-2">
-            <Button onClick={onGenerate}>{t("ask.generate")}</Button>
+            <Button disabled={isGenerating} onClick={onGenerate}>
+              {isGenerating ? t("ask.generating") : t("ask.generate")}
+            </Button>
             {samples.map(([label, value]) => (
-              <Button key={label} onClick={() => onUseSample(value)} variant="secondary">
+              <Button disabled={isGenerating} key={label} onClick={() => onUseSample(value)} variant="secondary">
                 {t(label)}
               </Button>
             ))}
@@ -214,13 +383,25 @@ export function AskPage({
         </div>
       </Card>
 
+      {errorMessage ? (
+        <Card className="border-amber-200 bg-amber-50">
+          <Badge tone="warning">{t("common.warning")}</Badge>
+          <p className="mt-3 leading-7 text-amber-900">{errorMessage}</p>
+        </Card>
+      ) : null}
+
       {result ? (
         <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
           <Card className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="text-lg font-bold text-slate-950">{t("ask.generatedSql")}</h3>
-                <p className="text-sm text-slate-500">{t("ask.engine")}: {result.engine}</p>
+                <p className="text-sm text-slate-500">
+                  {t("ask.engine")}: {result.engine}
+                  {result.confidence !== undefined
+                    ? ` · ${t("common.confidence")}: ${Math.round(result.confidence * 100)}%`
+                    : ""}
+                </p>
               </div>
               <Button onClick={onCopy} variant="secondary">
                 <Copy className="mr-2 h-4 w-4" />
@@ -248,6 +429,21 @@ export function AskPage({
             <Card>
               <h3 className="text-lg font-bold text-slate-950">{t("ask.interpretation")}</h3>
               <p className="mt-2 leading-7 text-slate-600">{result.interpretation}</p>
+              {result.engine === "saved-example" ? (
+                <p className="mt-3 rounded-lg bg-sky-50 p-3 text-sm font-semibold text-sky-800">
+                  {t("ask.savedExampleNotice")}
+                </p>
+              ) : null}
+              {result.assumptions && result.assumptions.length > 0 ? (
+                <div className="mt-4 space-y-2">
+                  <h4 className="text-sm font-bold uppercase text-slate-500">{t("ask.assumptions")}</h4>
+                  {result.assumptions.map((assumption) => (
+                    <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-700" key={assumption}>
+                      {assumption}
+                    </p>
+                  ))}
+                </div>
+              ) : null}
             </Card>
             <Card>
               <h3 className="text-lg font-bold text-slate-950">{t("ask.validation")}</h3>
@@ -307,7 +503,7 @@ export function AskPage({
       ) : (
         <Card className="flex flex-col items-start gap-4 bg-sky-50">
           <Sparkles className="h-8 w-8 text-sky-700" />
-          <p className="max-w-2xl leading-7 text-slate-700">{t("ask.description")}</p>
+          <p className="max-w-2xl leading-7 text-slate-700">{t("ask.emptyState")}</p>
           <Button onClick={() => onUseSample("Pokaż aktywnych studentów z nazwą wydziału")}>
             {t("app.tryDemo")}
           </Button>
@@ -323,7 +519,9 @@ export function AskPage({
             history.map((entry) => (
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-3" key={`${entry.generatedAt}_${entry.question}`}>
                 <div className="text-sm font-bold text-slate-950">{entry.question}</div>
-                <div className="mt-1 text-xs text-slate-500">{entry.generatedAt}</div>
+                <div className="mt-1 text-xs text-slate-500">
+                  {entry.generatedAt} · {entry.engine}
+                </div>
               </div>
             ))
           )}
@@ -439,9 +637,9 @@ export function RelationshipsPage({ t, workspace }: CommonPageProps) {
               <Badge>{relationship.source}</Badge>
             </div>
             <h3 className="mt-4 text-lg font-bold text-slate-950">
-                {relationship.fromTable}
-                {" -> "}
-                {relationship.toTable}
+              {relationship.fromTable}
+              {" -> "}
+              {relationship.toTable}
             </h3>
             <p className="mt-2 font-mono text-sm text-slate-700">
               {relationship.fromColumn} = {relationship.toColumn}
@@ -469,7 +667,7 @@ export function WorkspaceMemoryPage({ t, workspace }: CommonPageProps) {
         ))}
       </div>
       <Card>
-        <h3 className="text-lg font-bold text-slate-950">Correction Memory</h3>
+        <h3 className="text-lg font-bold text-slate-950">{t("workspaceMemory.corrections")}</h3>
         <div className="mt-4 space-y-3">
           {workspace.corrections.map((correction) => (
             <div className="rounded-lg bg-slate-50 p-4" key={correction.id}>
@@ -511,7 +709,7 @@ export function HistoryPage({ t, history }: { t: Translator; history: Generation
   );
 }
 
-export function SettingsPage({ t, workspace }: CommonPageProps) {
+export function SettingsPage({ t, workspace, runtimeLabel }: CommonPageProps) {
   return (
     <PageFrame description={t("settings.description")} title={t("settings.title")}>
       <div className="grid gap-4 md:grid-cols-2">
@@ -519,7 +717,9 @@ export function SettingsPage({ t, workspace }: CommonPageProps) {
           <ShieldCheck className="h-8 w-8 text-emerald-600" />
           <h3 className="mt-4 text-lg font-bold text-slate-950">{t("settings.provider")}</h3>
           <p className="mt-2 leading-7 text-slate-600">{t("settings.providerText")}</p>
-          <Badge className="mt-4" tone="warning">disabled</Badge>
+          <Badge className="mt-4" tone={runtimeLabel === "api" ? "info" : "warning"}>
+            {t(runtimeLabel === "api" ? "runtime.api" : "runtime.static")}
+          </Badge>
         </Card>
         <Card>
           <Database className="h-8 w-8 text-sky-700" />
@@ -537,7 +737,9 @@ function TableCard({ table, t }: { table: TableDefinition; t: Translator }) {
     <Card>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-lg font-bold text-slate-950">{table.name}</h3>
-        <Badge tone="info">{table.columns.length} {t("schema.columns")}</Badge>
+        <Badge tone="info">
+          {table.columns.length} {t("schema.columns")}
+        </Badge>
       </div>
       <div className="mt-4 overflow-hidden rounded-lg border border-slate-200">
         {table.columns.map((column) => (
@@ -558,15 +760,43 @@ function TableCard({ table, t }: { table: TableDefinition; t: Translator }) {
   );
 }
 
-function PageFrame({
-  children,
-  description,
-  title
+function SqlInput({
+  label,
+  onChange,
+  placeholder,
+  value
 }: {
-  children: ReactNode;
-  description: string;
-  title: string;
+  label: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  value: string;
 }) {
+  return (
+    <label className="space-y-2 text-sm font-semibold text-slate-700">
+      <span>{label}</span>
+      <textarea
+        className="min-h-36 w-full rounded-lg border border-slate-300 bg-white p-3 font-mono text-xs leading-5 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        value={value}
+      />
+      <input
+        accept=".sql,.txt"
+        className="block w-full text-xs text-slate-500 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-xs file:font-semibold file:text-slate-700"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (!file) {
+            return;
+          }
+          file.text().then(onChange).catch(() => undefined);
+        }}
+        type="file"
+      />
+    </label>
+  );
+}
+
+function PageFrame({ children, description, title }: { children: ReactNode; description: string; title: string }) {
   return (
     <div className="space-y-6">
       <div>

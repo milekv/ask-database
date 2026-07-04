@@ -43,6 +43,7 @@ export function analyzeHistoricalQuery(sql: string, dialect: SqlDialect): Histor
   const redactedSql = redactSqlLiterals(normalized);
   const statementType = /^with\b/i.test(normalized) ? "with" : "select";
   const tables = extractTables(normalized);
+  const columns = extractColumns(normalized);
   const joins = extractJoins(normalized);
   const filters = extractFilters(normalized);
 
@@ -50,8 +51,10 @@ export function analyzeHistoricalQuery(sql: string, dialect: SqlDialect): Histor
     id: `query_${stableHash(redactedSql)}`,
     originalSql: sql.trim(),
     redactedSql,
+    normalizedSql: normalized,
     statementType,
     tables,
+    columns,
     joins,
     filters,
     groupBy: extractClauseColumns(normalized, "group by"),
@@ -111,6 +114,59 @@ function extractTables(sql: string): string[] {
   }
 
   return unique(tables);
+}
+
+export function extractColumns(sql: string): string[] {
+  const columns = new Set<string>();
+  const selectMatch = sql.match(/\bselect\s+(.+?)\s+from\s+/i);
+  if (selectMatch?.[1]) {
+    for (const part of splitSelectList(selectMatch[1])) {
+      const cleaned = part
+        .replace(/\s+as\s+[a-zA-Z0-9_]+$/i, "")
+        .replace(/\s+[a-zA-Z0-9_]+$/i, "")
+        .trim();
+      if (/^\w+\.\w+$/.test(cleaned)) {
+        columns.add(cleaned);
+      } else if (/^\w+$/.test(cleaned) && cleaned !== "*") {
+        columns.add(cleaned);
+      }
+    }
+  }
+
+  for (const match of sql.matchAll(/\b([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\b/g)) {
+    if (match[1] && match[2]) {
+      columns.add(`${match[1]}.${match[2]}`);
+    }
+  }
+
+  return Array.from(columns);
+}
+
+function splitSelectList(input: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let depth = 0;
+
+  for (const char of input) {
+    if (char === "(") {
+      depth += 1;
+    }
+    if (char === ")") {
+      depth = Math.max(0, depth - 1);
+    }
+    if (char === "," && depth === 0) {
+      parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+
+  if (current.trim()) {
+    parts.push(current.trim());
+  }
+
+  return parts;
 }
 
 function extractJoins(sql: string): JoinPattern[] {

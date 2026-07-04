@@ -1,5 +1,8 @@
 packages:
   - "apps/*"
   - "packages/*"
+overrides:
+  dompurify: ^3.4.11
+  esbuild: 0.25.12
 allowBuilds:
   esbuild: true
